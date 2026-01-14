@@ -174,7 +174,6 @@ class JobQueueService(Service):
             raise RuntimeError(msg)
 
         main_queue, event_manager, existing_task, _ = self._queues[job_id]
-
         if existing_task and not existing_task.done():
             logger.debug(f"Existing task for job_id {job_id} detected; cancelling it.")
             existing_task.cancel()

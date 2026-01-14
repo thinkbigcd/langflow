@@ -32,6 +32,7 @@ from lfx.graph.graph.base import Graph
 from lfx.schema.workflow import (
     WORKFLOW_EXECUTION_RESPONSES,
     WORKFLOW_STATUS_RESPONSES,
+    JobStatus,
     WorkflowExecutionRequest,
     WorkflowExecutionResponse,
     WorkflowJobResponse,
@@ -49,12 +50,19 @@ from langflow.api.v2.converters import (
     parse_flat_inputs,
     run_response_to_workflow_response,
 )
-from langflow.exceptions.api import WorkflowTimeoutError, WorkflowValidationError
+from langflow.exceptions.api import (
+    WorkflowQueueFullError,
+    WorkflowResourceError,
+    WorkflowServiceUnavailableError,
+    WorkflowTimeoutError,
+    WorkflowValidationError,
+)
 from langflow.helpers.flow import get_flow_by_id_or_endpoint_name
 from langflow.processing.process import process_tweaks, run_graph_internal
 from langflow.services.auth.utils import api_key_security
 from langflow.services.database.models.flow.model import FlowRead
 from langflow.services.database.models.user.model import UserRead
+from langflow.services.deps import get_task_service
 
 # Configuration constants
 EXECUTION_TIMEOUT = 300  # 5 minutes default timeout for sync execution
@@ -84,7 +92,7 @@ def check_developer_api_enabled() -> None:
         )
 
 
-router = APIRouter(prefix="/workflow", tags=["Workflow"], dependencies=[Depends(check_developer_api_enabled)])
+router = APIRouter(prefix="/workflows", tags=["Workflow"], dependencies=[Depends(check_developer_api_enabled)])
 
 
 @router.post(
@@ -144,7 +152,7 @@ async def execute_workflow(
                 detail={
                     "error": "Flow not found",
                     "code": "FLOW_NOT_FOUND",
-                    "message": f"Flow '{workflow_request.flow_id}' does not exist or you don't have access to it",
+                    "message": f"Flow '{workflow_request.flow_id}' does not exist. Verify the flow_id and try again.",
                     "flow_id": workflow_request.flow_id,
                 },
             ) from e
@@ -180,14 +188,40 @@ async def execute_workflow(
 
     # Phase 1: Background mode (to be implemented)
     if workflow_request.background:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail={
-                "error": "Not implemented",
-                "code": "NOT_IMPLEMENTED",
-                "message": "Background execution not yet implemented",
-            },
-        )
+        try:
+            return await execute_workflow_background(
+                workflow_request=workflow_request, flow=flow, api_key_user=api_key_user
+            )
+        except WorkflowServiceUnavailableError as err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "Service unavailable",
+                    "code": "QUEUE_SERVICE_UNAVAILABLE",
+                    "message": str(err),
+                    "flow_id": workflow_request.flow_id,
+                },
+            ) from err
+        except (WorkflowResourceError, WorkflowQueueFullError, MemoryError) as err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "Server busy",
+                    "code": "SERVER_BUSY",
+                    "message": "The server is currently unable to handle the request due to resource limits.",
+                    "flow_id": workflow_request.flow_id,
+                },
+            ) from err
+        except Exception as err:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "Internal server error",
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": f"An unexpected error occurred while processing the background task: {err!s}",
+                    "flow_id": workflow_request.flow_id,
+                },
+            ) from err
 
     # Phase 2: Streaming mode (to be implemented)
     if workflow_request.stream:
@@ -394,6 +428,50 @@ async def execute_sync_workflow(
         )
 
 
+async def execute_workflow_background(
+    workflow_request: WorkflowExecutionRequest, flow: FlowRead, api_key_user: UserRead
+) -> WorkflowJobResponse:
+    """Execute workflow in the background and return job ID for the user to track the execution status."""
+    try:
+        # Parse flat inputs structure
+        tweaks, session_id = parse_flat_inputs(workflow_request.inputs or {})
+
+        # Validate flow data
+        if flow.data is None:
+            msg = f"Flow {flow.id} has no data"
+            raise ValueError(msg)
+
+        # Build the graph once
+        flow_id_str = str(flow.id)
+        user_id = str(api_key_user.id)
+        graph_data = flow.data.copy()
+        graph_data = process_tweaks(graph_data, tweaks, stream=False)
+        graph = Graph.from_payload(graph_data, flow_id=flow_id_str, user_id=user_id, flow_name=flow.name)
+
+        # Get terminal nodes
+        terminal_node_ids = graph.get_terminal_nodes()
+
+        # Launch background task
+        task_service = get_task_service()
+        job_id = await task_service.fire_and_forget_task(
+            run_graph_internal,
+            graph=graph,
+            flow_id=flow_id_str,
+            session_id=session_id,
+            inputs=None,
+            outputs=terminal_node_ids,
+            stream=False,
+        )
+        status = JobStatus.QUEUED
+        return WorkflowJobResponse(job_id=job_id, flow_id=workflow_request.flow_id, status=status)
+
+    except (WorkflowResourceError, WorkflowServiceUnavailableError, WorkflowQueueFullError):
+        # Re-raise infrastructure/resource errors to be handled by the endpoint
+        raise
+    except MemoryError as exc:
+        raise WorkflowResourceError from exc
+
+
 @router.get(
     "",
     response_model=None,
@@ -405,7 +483,7 @@ async def execute_sync_workflow(
 async def get_workflow_status(
     api_key_user: Annotated[UserRead, Depends(api_key_security)],  # noqa: ARG001
     job_id: Annotated[str, Query(description="Job ID to query")],  # noqa: ARG001
-) -> WorkflowExecutionResponse | StreamingResponse:
+) -> WorkflowJobResponse:
     """Get workflow job status and results by job ID.
 
     This endpoint allows clients to poll for the status of background workflow executions.
@@ -432,7 +510,7 @@ async def get_workflow_status(
     # - Store job metadata in database or cache
     # - Track execution progress and status
     # - Return appropriate response based on job state
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not implemented /status yet")
+    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Workflow status not yet available.")
 
 
 @router.post(

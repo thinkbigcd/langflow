@@ -488,18 +488,22 @@ def run_response_to_workflow_response(
     )
 
 
-def create_job_response(job_id: str) -> WorkflowJobResponse:
+def create_job_response(job_id: str, flow_id: str) -> WorkflowJobResponse:
     """Create a background job response.
 
     Args:
         job_id: The generated job ID
+        flow_id: The flow ID
 
     Returns:
         WorkflowJobResponse for background execution
     """
+    from datetime import datetime, timezone
+
     return WorkflowJobResponse(
         job_id=job_id,
-        created_timestamp=str(int(time.time())),
+        flow_id=flow_id,
+        created_timestamp=datetime.now(timezone.utc).isoformat(),
         status=JobStatus.QUEUED,
         errors=[],
     )
@@ -507,7 +511,7 @@ def create_job_response(job_id: str) -> WorkflowJobResponse:
 
 def create_error_response(
     flow_id: str,
-    job_id: str,
+    job_id: str | None,
     workflow_request: WorkflowExecutionRequest,
     error: Exception,
 ) -> WorkflowExecutionResponse:
