@@ -278,6 +278,7 @@ class RunFlowBaseComponent(Component):
         flow_description, tool_mode_inputs = await self.get_required_data()
         if not tool_mode_inputs:
             return []
+        print("tool_mode_inputs in _get_tools", tool_mode_inputs)
         # convert list of dicts to list of dotdicts
         tool_mode_inputs = [dotdict(field) for field in tool_mode_inputs]
         return component_toolkit(component=self).get_tools(
@@ -325,6 +326,12 @@ class RunFlowBaseComponent(Component):
         Returns:
             The resolved output.
         """
+        # print("ATTRIBUTES in _resolve_flow_output", self._attributes)
+        print("FLOW_TWEAK_DATA in _resolve_flow_output", self._attributes.get("flow_tweak_data", {}))
+        print("BEFORE flow_tweak_data in _resolve_flow_output", self.flow_tweak_data)
+
+        self._pre_run_setup() # called manually to ensure flow_tweak_data is built for tool mode execution
+        print("AFTER flow_tweak_data in _resolve_flow_output", self.flow_tweak_data)
         run_outputs = await self._get_cached_run_outputs(
             user_id=self.user_id,
             tweaks=self.flow_tweak_data,
@@ -510,7 +517,8 @@ class RunFlowBaseComponent(Component):
         )
         if tweaks:
             graph = process_tweaks_on_graph(graph, tweaks)
-
+        print("inputs", inputs)
+        print("tweaks", tweaks)
         return await run_flow(
             inputs=inputs,
             flow_id=self.flow_id_selected,
@@ -651,6 +659,9 @@ class RunFlowBaseComponent(Component):
         if not values:
             return tweaks
         for field_name, field_value in values.items():
+            if field_name != "code":
+                print("field_name in _extract_tweaks_from_keyed_values", field_name)
+                print("field_value in _extract_tweaks_from_keyed_values", field_value)
             if self.IOPUT_SEP not in field_name:
                 continue
             node_id, param_name = field_name.split(self.IOPUT_SEP, 1)
@@ -687,12 +698,26 @@ class RunFlowBaseComponent(Component):
             return updated_at
         return self._attributes.get("flow_name_selected_updated_at")
 
+    def _build_flow_tweak_data(self) -> dict[str, dict[str, Any]]:
+        """Build the flow tweak data from the component's attributes."""
+        # 1. Start with base attributes
+        combined_values = self._attributes.copy()
+        # 2. Get tool-provided tweaks
+        tool_tweaks = combined_values.get("flow_tweak_data", {})
+        if hasattr(tool_tweaks, "model_dump"):
+            tool_tweaks = tool_tweaks.model_dump()
+        # 3. Merge raw tweaks directly (overriding base attributes)
+        if tool_tweaks and isinstance(tool_tweaks, dict):
+            combined_values.update(tool_tweaks)
+        # 4. Extract everything in a single pass
+        return self._extract_tweaks_from_keyed_values(combined_values)
+
     def _pre_run_setup(self) -> None:  # Note: overrides the base pre_run_setup method
         """Reset the last run's outputs upon new flow execution."""
         self._last_run_outputs = None
         self._cached_flow_updated_at = self._get_selected_flow_updated_at()
         if self._cached_flow_updated_at:
             self._attributes["flow_name_selected_updated_at"] = self._cached_flow_updated_at
-        self._attributes["flow_tweak_data"] = {}
-        self.flow_tweak_data = self._extract_tweaks_from_keyed_values(self._attributes)
+
+        self.flow_tweak_data = self._build_flow_tweak_data()
         self._flow_run_inputs = self._build_inputs_from_tweaks(self.flow_tweak_data)
