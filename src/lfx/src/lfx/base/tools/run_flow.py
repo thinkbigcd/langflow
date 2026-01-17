@@ -1,4 +1,5 @@
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime
 from types import MethodType  # near the imports
 from typing import TYPE_CHECKING, Any
@@ -156,6 +157,8 @@ class RunFlowBaseComponent(Component):
         )
         graph.description = flow.data.get("description", None)
         graph.updated_at = flow.data.get("updated_at", None)
+        for vertex in graph.vertices:
+            vertex.frozen = False
 
         self._flow_cache_call("set", flow=graph)
 
@@ -251,7 +254,7 @@ class RunFlowBaseComponent(Component):
         new_fields = self.get_new_fields_from_graph(graph)
         new_fields = self.update_input_types(new_fields)
 
-        return (graph.description, [field for field in new_fields if field.get("tool_mode") is True])
+        return (graph.description, [field for field in new_fields if field.get("tool_mode", False)])
 
     def update_input_types(self, fields: list[dotdict]) -> list[dotdict]:
         """Update the input_types of the fields.
@@ -278,7 +281,7 @@ class RunFlowBaseComponent(Component):
         flow_description, tool_mode_inputs = await self.get_required_data()
         if not tool_mode_inputs:
             return []
-        print("tool_mode_inputs in _get_tools", tool_mode_inputs)
+
         # convert list of dicts to list of dotdicts
         tool_mode_inputs = [dotdict(field) for field in tool_mode_inputs]
         return component_toolkit(component=self).get_tools(
@@ -297,18 +300,18 @@ class RunFlowBaseComponent(Component):
         self,
         *,
         user_id: str | None = None,
-        tweaks: dict | None,
-        inputs: dict | list[dict] | None,
+        # tweaks: dict | None,
+        # inputs: dict | list[dict] | None,
         output_type: str,
     ):
         if self._last_run_outputs is not None:
             return self._last_run_outputs
-        resolved_tweaks = tweaks or self.flow_tweak_data or {}
-        resolved_inputs = (inputs or self._flow_run_inputs or self._build_inputs_from_tweaks(resolved_tweaks)) or None
+        # resolved_tweaks = tweaks or self.flow_'tweak_data or {}
+        # resolved_inputs = (inputs or self._flow'_run_inputs or self._build_inputs_from_ioputs(resolved_tweaks)) or None
         self._last_run_outputs = await self._run_flow_with_cached_graph(
             user_id=user_id,
-            tweaks=resolved_tweaks,
-            inputs=resolved_inputs,
+            # tweaks=resolved_tweaks,
+            # inputs=resolved_inputs,
             output_type=output_type,
         )
         return self._last_run_outputs
@@ -326,19 +329,26 @@ class RunFlowBaseComponent(Component):
         Returns:
             The resolved output.
         """
-        # print("ATTRIBUTES in _resolve_flow_output", self._attributes)
-        print("FLOW_TWEAK_DATA in _resolve_flow_output", self._attributes.get("flow_tweak_data", {}))
-        print("BEFORE flow_tweak_data in _resolve_flow_output", self.flow_tweak_data)
+        # print("is_tool", self._is_tool)
+        print("_attributes in _resolve_flow_output", self._attributes)
+        
+        # print("TOOL MODE", self._attributes["tool_mode"])
+        # print("template_config", getattr(self, "template_config", {}))
+        # if self._attributes:
+        # # print("flow_tweak_data in _resolve_flow_output is not None")
+        #     self._pre_run_setup() # called manually to ensure flow_tweak_data is built for tool mode execution
 
-        self._pre_run_setup() # called manually to ensure flow_tweak_data is built for tool mode execution
-        print("AFTER flow_tweak_data in _resolve_flow_output", self.flow_tweak_data)
+        # print("resolving flow output for vertex_id", vertex_id, "and output_name", output_name)
+        # print("flow_tweak_data", self.flow_tweak_data)
+        # print("inputs", self._flow_run_inputs)
+        print("\n\n\n")
         run_outputs = await self._get_cached_run_outputs(
             user_id=self.user_id,
-            tweaks=self.flow_tweak_data,
-            inputs=None,
+            # tweaks=self.flow_tweak_data,
+            # inputs=None,
             output_type="any",
         )
-
+        # self._is_tool = False
         if not run_outputs:
             return None
         first_output = run_outputs[0]
@@ -506,28 +516,38 @@ class RunFlowBaseComponent(Component):
         self,
         *,
         user_id: str | None = None,
-        tweaks: dict | None = None,
-        inputs: dict | list[dict] | None = None,
+        # tweaks: dict | None = None,
+        # inputs: dict | list[dict] | None = None,
         output_type: str = "any",  # "any" is used to return all outputs
     ):
-        graph = await self.get_graph(
-            flow_name_selected=self.flow_name_selected,
-            flow_id_selected=self.flow_id_selected,
-            updated_at=self._cached_flow_updated_at,
-        )
-        if tweaks:
-            graph = process_tweaks_on_graph(graph, tweaks)
-        print("inputs", inputs)
-        print("tweaks", tweaks)
-        return await run_flow(
-            inputs=inputs,
-            flow_id=self.flow_id_selected,
-            flow_name=self.flow_name_selected,
-            user_id=user_id,
-            session_id=self.session_id,
-            output_type=output_type,
-            graph=graph,
-        )
+        try:
+            graph = deepcopy(
+                await self.get_graph(
+                    flow_name_selected=self.flow_name_selected,
+                    flow_id_selected=self.flow_id_selected,
+                    updated_at=self._cached_flow_updated_at,
+                    ))
+            tweaks = self._build_flow_tweak_data()
+            inputs = self._build_inputs(tweaks)
+            print("final tweaks", tweaks)
+            print("final inputs", inputs)
+            if tweaks:
+                graph = process_tweaks_on_graph(graph, tweaks)
+
+            print("\n\n\n")
+            result = await run_flow(
+                inputs=inputs,
+                flow_id=self.flow_id_selected,
+                flow_name=self.flow_name_selected,
+                user_id=user_id,
+                session_id=self.session_id,
+                output_type=output_type,
+                graph=graph,
+            )
+        except Exception as e: # noqa: BLE001
+            logger.error(f"Error running flow: {e}")
+            return None
+        return result
 
     ################################################################
     # Flow cache utils
@@ -651,29 +671,26 @@ class RunFlowBaseComponent(Component):
     ################################################################
     # Build inputs and flow tweak data
     ################################################################
-    def _extract_tweaks_from_keyed_values(
+    def _extract_ioputs_from_keyed_values(
         self,
         values: dict[str, Any] | None,
     ) -> dict[str, dict[str, Any]]:
-        tweaks: dict[str, dict[str, Any]] = {}
+        ioputs: dict[str, dict[str, Any]] = {}
         if not values:
-            return tweaks
+            return ioputs
         for field_name, field_value in values.items():
-            if field_name != "code":
-                print("field_name in _extract_tweaks_from_keyed_values", field_name)
-                print("field_value in _extract_tweaks_from_keyed_values", field_value)
             if self.IOPUT_SEP not in field_name:
                 continue
             node_id, param_name = field_name.split(self.IOPUT_SEP, 1)
-            tweaks.setdefault(node_id, {})[param_name] = field_value
-        return tweaks
+            ioputs.setdefault(node_id, {})[param_name] = field_value
+        return ioputs
 
-    def _build_inputs_from_tweaks(
+    def _build_inputs_from_ioputs(
         self,
-        tweaks: dict[str, dict[str, Any]],
+        ioputs: dict[str, dict[str, Any]],
     ) -> list[dict[str, Any]]:
         inputs: list[dict[str, Any]] = []
-        for vertex_id, params in tweaks.items():
+        for vertex_id, params in ioputs.items():
             if "input_value" not in params:
                 continue
             payload: dict[str, Any] = {
@@ -684,6 +701,14 @@ class RunFlowBaseComponent(Component):
                 payload["type"] = params["type"]
             inputs.append(payload)
         return inputs
+
+    def _build_inputs(
+        self,
+        tweaks: dict[str, dict[str, Any]] | None = None,
+        ) -> list[dict[str, Any]]:
+        extracted_inputs = tweaks or self._extract_ioputs_from_keyed_values(self._attributes)
+        return self._build_inputs_from_ioputs(extracted_inputs)
+
 
     def _get_selected_flow_updated_at(self) -> str | None:
         updated_at = (
@@ -710,14 +735,50 @@ class RunFlowBaseComponent(Component):
         if tool_tweaks and isinstance(tool_tweaks, dict):
             combined_values.update(tool_tweaks)
         # 4. Extract everything in a single pass
-        return self._extract_tweaks_from_keyed_values(combined_values)
+        return self._extract_ioputs_from_keyed_values(combined_values)
 
     def _pre_run_setup(self) -> None:  # Note: overrides the base pre_run_setup method
         """Reset the last run's outputs upon new flow execution."""
+        print("self._attributes in pre_run_setup", self._attributes)
+        print("\n\n\n")
+        # print("is tools_metadata in self._attributes", "tools_metadata" in self._attributes)
+        # print("tools_metadata", self._attributes.get("tools_metadata", {}))
+        # print("is flow_tweak_data in self._attributes", "flow_tweak_data" in self._attributes)
+        # print("flow_tweak_data", self._attributes.get("flow_tweak_data", {}))
+        # print("is flow_tweak_data in tools_metadata", "flow_tweak_data" in self._attributes.get("tools_metadata", {}))
+        # print("flow_tweak_data in tools_metadata", self._attributes.get("tools_metadata", {}).get("flow_tweak_data", {}))
+        # print("type of tools_metadata", type(self._attributes.get("tools_metadata", {})))
+        # print("tools_metadata is a pandas datafram, and he")
+        # print("tools_metadata is a pandas dataframe, and has the following columns Index(['name', 'description', 'tags', 'status', 'display_name', 'display_description', 'readonly', 'args'], dtype='object')")
+        # print("names of tools_metadata", self._attributes.get("tools_metadata", {})["name"])
+        # print("descriptions of tools_metadata", self._attributes.get("tools_metadata", {})["description"])
+        # print("tags of tools_metadata", self._attributes.get("tools_metadata", {})["tags"])
+        # print("status of tools_metadata", self._attributes.get("tools_metadata", {})["status"])
+        # print("display_name of tools_metadata", self._attributes.get("tools_metadata", {})["display_name"])
+        # print("display_description of tools_metadata", self._attributes.get("tools_metadata", {})["display_description"])
+        # print("readonly of tools_metadata", self._attributes.get("tools_metadata", {})["readonly"])
+        #set max set_option('display.max_colwidth', None)  for tools_metadata to display the full args
+        # import pandas as pd
+        # pd.set_option('display.max_colwidth', None)
+        # print("args of tools_metadata", self._attributes.get("tools_metadata", {})["args"])
+        # print("tools_metadata is a pandas datafram, and has the following columns", self._attributes.get("tools_metadata", {}).columns)
+        print("pre_run_setup")
+        # self._is_tool = False
         self._last_run_outputs = None
         self._cached_flow_updated_at = self._get_selected_flow_updated_at()
         if self._cached_flow_updated_at:
             self._attributes["flow_name_selected_updated_at"] = self._cached_flow_updated_at
+        self._attributes.pop("flow_tweak_data", None)
+        # self._attributes["flow_tweak_data"] = {}
+        # self.flow_tweak_data = self._extract_ioputs_from_keyed_values(self._attributes)
+        # self.flow_tweak_data = self._build_flow_tweak_data()
+        # self._flow_run_inputs = self._build_inputs(self._attributes)
 
-        self.flow_tweak_data = self._build_flow_tweak_data()
-        self._flow_run_inputs = self._build_inputs_from_tweaks(self.flow_tweak_data)
+    async def to_toolkit(self) -> list[Tool]:
+        """Convert the component to a list of tools."""
+        print("being called as a tool")
+        tools = await super().to_toolkit()
+        # self.flow_tweak_data = self._build_flow_tweak_data()
+        # self._flow_run_inputs = self._build_inputs_from_tweaks(self.flow_tweak_data)
+        # self._is_tool = True
+        return tools
