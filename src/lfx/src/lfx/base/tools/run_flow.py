@@ -156,8 +156,6 @@ class RunFlowBaseComponent(Component):
         )
         graph.description = flow.data.get("description", None)
         graph.updated_at = flow.data.get("updated_at", None)
-        for vertex in graph.vertices:
-            vertex.frozen = False
 
         self._flow_cache_call("set", flow=graph)
 
