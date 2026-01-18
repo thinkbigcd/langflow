@@ -199,7 +199,7 @@ class RunFlowBaseComponent(Component):
                             f"{field_template[input_name]['display_name']} ({vertex.display_name})"
                             if vdisp_cts[vertex.display_name] == 1
                             else (
-                                f"{field_template[input_name]['display_name']}"
+                                f"{field_template[input_name]['display_name']} "
                                 f"({vertex.display_name}-{vertex.id.split('-')[-1]})"
                             )
                         ),
@@ -210,7 +210,7 @@ class RunFlowBaseComponent(Component):
                 for input_name in field_order
                 if input_name in field_template
             ]
-            new_fields += new_vertex_inputs
+            new_fields.extend(new_vertex_inputs)
         return new_fields
 
     def add_new_fields(self, build_config: dotdict, new_fields: list[dotdict]) -> dotdict:
@@ -441,6 +441,8 @@ class RunFlowBaseComponent(Component):
         outputs: list[Output] = []
         vdisp_cts = Counter(v.display_name for v in output_vertices)
         for vertex in output_vertices:
+            if graph.successor_map.get(vertex.id, []): # output node has outgoing edges
+                continue
             one_out = len(vertex.outputs) == 1
             for vertex_output in vertex.outputs:
                 new_name = self._get_ioput_name(vertex.id, vertex_output.get("name"))
@@ -501,7 +503,7 @@ class RunFlowBaseComponent(Component):
                 flow_name_selected=self.flow_name_selected,
                 flow_id_selected=self.flow_id_selected,
                 updated_at=self._cached_flow_updated_at,
-                )
+                ) # may or may not want to create a deepcopy of the graph here
 
             if tweaks := self._build_flow_tweak_data():
                 graph = process_tweaks_on_graph(graph, tweaks)
@@ -666,7 +668,11 @@ class RunFlowBaseComponent(Component):
                 continue
             payload: dict[str, Any] = {
                 "components": [vertex_id],
-                "input_value": params["input_value"],
+                "input_value": (
+                    params["input_value"].get_text()
+                    if isinstance(params["input_value"], Data)
+                    else params["input_value"]
+                    ),
             }
             if params.get("type"):
                 payload["type"] = params["type"]
@@ -680,6 +686,19 @@ class RunFlowBaseComponent(Component):
         extracted_inputs = tweaks or self._extract_ioputs_from_keyed_values(self._attributes)
         return self._build_inputs_from_ioputs(extracted_inputs)
 
+    def _build_flow_tweak_data(self) -> dict[str, dict[str, Any]]:
+        """Build the flow tweak data from the component's attributes."""
+        # 1. Start with base attributes
+        combined_values = self._attributes
+        # 2. Get tool-provided tweaks
+        tool_tweaks = combined_values.get("flow_tweak_data", {})
+        if hasattr(tool_tweaks, "model_dump"):
+            tool_tweaks = tool_tweaks.model_dump()
+        # 3. Merge raw tweaks directly (overriding base attributes)
+        if tool_tweaks and isinstance(tool_tweaks, dict):
+            combined_values.update(tool_tweaks)
+        # 4. Extract everything in a single pass
+        return self._extract_ioputs_from_keyed_values(combined_values)
 
     def _get_selected_flow_updated_at(self) -> str | None:
         updated_at = (
@@ -693,20 +712,6 @@ class RunFlowBaseComponent(Component):
         if updated_at:
             return updated_at
         return self._attributes.get("flow_name_selected_updated_at")
-
-    def _build_flow_tweak_data(self) -> dict[str, dict[str, Any]]:
-        """Build the flow tweak data from the component's attributes."""
-        # 1. Start with base attributes
-        combined_values = self._attributes.copy()
-        # 2. Get tool-provided tweaks
-        tool_tweaks = combined_values.get("flow_tweak_data", {})
-        if hasattr(tool_tweaks, "model_dump"):
-            tool_tweaks = tool_tweaks.model_dump()
-        # 3. Merge raw tweaks directly (overriding base attributes)
-        if tool_tweaks and isinstance(tool_tweaks, dict):
-            combined_values.update(tool_tweaks)
-        # 4. Extract everything in a single pass
-        return self._extract_ioputs_from_keyed_values(combined_values)
 
     def _pre_run_setup(self) -> None:  # Note: overrides the base pre_run_setup method
         """Reset the last run's outputs upon new flow execution."""
