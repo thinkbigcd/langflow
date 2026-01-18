@@ -685,9 +685,12 @@ class RunFlowBaseComponent(Component):
         return self._build_inputs_from_ioputs(extracted_inputs)
 
     def _build_flow_tweak_data(self) -> dict[str, dict[str, Any]]:
-        """Build the flow tweak data from the component's attributes."""
+        """Build the flow tweak data from the component's attributes.
+
+        Mutates the component's attributes by updating it with the flow_tweak_data.
+        """
         # 1. Start with base attributes
-        combined_values = self._attributes
+        combined_values = self._attributes # allow mutation for now to avoid overhead of creating a copy
         # 2. Get tool-provided tweaks
         tool_tweaks = combined_values.get("flow_tweak_data", {})
         if hasattr(tool_tweaks, "model_dump"):
