@@ -4,7 +4,6 @@ from types import MethodType  # near the imports
 from typing import TYPE_CHECKING, Any
 
 from langflow.helpers.flow import get_flow_by_id_or_name
-from langflow.processing.process import process_tweaks_on_graph
 
 from lfx.base.tools.constants import TOOL_OUTPUT_NAME
 from lfx.custom.custom_component.component import Component, get_component_toolkit
@@ -56,6 +55,7 @@ class RunFlowBaseComponent(Component):
         self._cached_flow_updated_at: str | None = None
 
     _base_inputs: list[InputTypes] = [
+        # TODO: store the selected flow's graph in a component attribute?
         DropdownInput(
             name="flow_name_selected",
             display_name="Flow Name",
@@ -401,20 +401,22 @@ class RunFlowBaseComponent(Component):
         Returns:
             The updated frontend node.
         """
-        if field_name != "flow_name_selected" or not field_value:
-            return frontend_node
+        if (
+            (field_name == "flow_name_selected" and field_value)
+            or (field_name == "tool_mode" and not field_value)
+            ): # display selected flow's outputs when selected or tool_mode is turned off
+            flow_selected_metadata = (
+                frontend_node.get("template", {}).get("flow_name_selected", {}).get("selected_metadata", {})
+            )
+            graph = await self.get_graph(
+                flow_name_selected=field_value,
+                flow_id_selected=flow_selected_metadata.get("id"),
+                updated_at=flow_selected_metadata.get("updated_at"),
+            )
+            outputs = self._format_flow_outputs(graph)  # generate Output objects from the flow's output nodes
+            self._sync_flow_outputs(outputs)
+            frontend_node["outputs"] = [output.model_dump() for output in outputs]
 
-        flow_selected_metadata = (
-            frontend_node.get("template", {}).get("flow_name_selected", {}).get("selected_metadata", {})
-        )
-        graph = await self.get_graph(
-            flow_name_selected=field_value,
-            flow_id_selected=flow_selected_metadata.get("id"),
-            updated_at=flow_selected_metadata.get("updated_at"),
-        )
-        outputs = self._format_flow_outputs(graph)  # generate Output objects from the flow's output nodes
-        self._sync_flow_outputs(outputs)
-        frontend_node["outputs"] = [output.model_dump() for output in outputs]
         return frontend_node
 
     ################################################################
@@ -439,7 +441,8 @@ class RunFlowBaseComponent(Component):
         outputs: list[Output] = []
         vdisp_cts = Counter(v.display_name for v in output_vertices)
         for vertex in output_vertices:
-            if graph.successor_map.get(vertex.id, []): # output node has outgoing edges
+            if graph.successor_map.get(vertex.id, []):
+                # skip output node if it has outgoing edges
                 continue
             one_out = len(vertex.outputs) == 1
             for vertex_output in vertex.outputs:
@@ -504,7 +507,7 @@ class RunFlowBaseComponent(Component):
                 ) # may or may not want to create a deepcopy of the graph here
 
             if tweaks := self._build_flow_tweak_data():
-                graph = process_tweaks_on_graph(graph, tweaks)
+                graph = self._process_tweaks_on_graph(graph, tweaks)
 
             result = await run_flow(
                 inputs=self._build_inputs(tweaks),
@@ -515,6 +518,7 @@ class RunFlowBaseComponent(Component):
                 output_type=output_type,
                 graph=graph,
             )
+
         except Exception as e: # noqa: BLE001
             logger.error(f"Error running flow: {e}")
             return None
@@ -722,3 +726,13 @@ class RunFlowBaseComponent(Component):
             self._attributes["flow_name_selected_updated_at"] = self._cached_flow_updated_at
         # remove stale data from previous toolmode run
         self._attributes.pop("flow_tweak_data", None)
+
+    def _process_tweaks_on_graph(self, graph: Graph, tweaks: dict[str, dict[str, Any]]):
+        for vertex in graph.vertices:
+            if not (isinstance(vertex, Vertex) and isinstance(vertex.id, str)):
+                continue
+            if not (node_tweaks := tweaks.get(vertex.id)):
+                continue
+            node_tweaks.pop("code", None)
+            vertex.update_raw_params(node_tweaks, overwrite=True)
+        return graph

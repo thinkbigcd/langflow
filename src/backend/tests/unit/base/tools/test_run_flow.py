@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from lfx.base.tools.run_flow import RunFlowBaseComponent
 from lfx.graph.graph.base import Graph
+from lfx.graph.vertex.base import Vertex
 from lfx.schema.data import Data
 from lfx.schema.dotdict import dotdict
 from lfx.services.cache.utils import CacheMiss
@@ -685,3 +686,108 @@ class TestRunFlowBaseComponentTweakData:
         assert tweak_data["vertex1"]["param2"] == "value2"
         assert "vertex2" in tweak_data
         assert tweak_data["vertex2"]["param3"] == "value3"
+
+
+class TestRunFlowBaseComponentUpdateOutputs:
+    """Test update_outputs method."""
+
+    @pytest.mark.asyncio
+    async def test_update_outputs_with_flow_name_selected(self):
+        """Test update_outputs when flow_name_selected is changed."""
+        component = RunFlowBaseComponent()
+        frontend_node = {
+            "template": {
+                "flow_name_selected": {
+                    "selected_metadata": {
+                        "id": "flow_id",
+                        "updated_at": "timestamp"
+                    }
+                }
+            }
+        }
+        mock_graph = MagicMock(spec=Graph)
+        mock_output = MagicMock(spec=Output)
+        mock_output.model_dump.return_value = {"name": "output1"}
+
+        with (
+            patch.object(component, "get_graph", new_callable=AsyncMock) as mock_get_graph,
+            patch.object(component, "_format_flow_outputs") as mock_format_outputs,
+            patch.object(component, "_sync_flow_outputs") as mock_sync_outputs,
+        ):
+            mock_get_graph.return_value = mock_graph
+            mock_format_outputs.return_value = [mock_output]
+
+            result = await component.update_outputs(frontend_node, "flow_name_selected", "new_flow")
+
+            assert result["outputs"] == [{"name": "output1"}]
+            mock_get_graph.assert_called_once()
+            mock_format_outputs.assert_called_once_with(mock_graph)
+            mock_sync_outputs.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_outputs_with_tool_mode_false(self):
+        """Test update_outputs when tool_mode is set to False."""
+        component = RunFlowBaseComponent()
+        frontend_node = {
+            "template": {
+                "flow_name_selected": {
+                    "selected_metadata": {
+                        "id": "flow_id",
+                        "updated_at": "timestamp"
+                    }
+                }
+            }
+        }
+        mock_graph = MagicMock(spec=Graph)
+        mock_output = MagicMock(spec=Output)
+        mock_output.model_dump.return_value = {"name": "output1"}
+
+        with (
+            patch.object(component, "get_graph", new_callable=AsyncMock) as mock_get_graph,
+            patch.object(component, "_format_flow_outputs") as mock_format_outputs,
+            patch.object(component, "_sync_flow_outputs") as mock_sync_outputs,
+        ):
+            mock_get_graph.return_value = mock_graph
+            mock_format_outputs.return_value = [mock_output]
+
+            result = await component.update_outputs(frontend_node, "tool_mode", False)
+
+            assert result["outputs"] == [{"name": "output1"}]
+            mock_get_graph.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_outputs_ignored_fields(self):
+        """Test update_outputs with fields that should be ignored."""
+        component = RunFlowBaseComponent()
+        frontend_node = {}
+
+        result = await component.update_outputs(frontend_node, "other_field", "value")
+
+        assert result == frontend_node
+
+
+class TestRunFlowBaseComponentTweaks:
+    """Test tweak processing methods."""
+
+    def test_process_tweaks_on_graph(self):
+        """Test _process_tweaks_on_graph applies tweaks to vertices."""
+        component = RunFlowBaseComponent()
+        graph = MagicMock(spec=Graph)
+        vertex1 = MagicMock(spec=Vertex)
+        vertex1.id = "vertex1"
+        vertex2 = MagicMock(spec=Vertex)
+        vertex2.id = "vertex2"
+        graph.vertices = [vertex1, vertex2]
+
+        tweaks = {
+            "vertex1": {"param": "value", "code": "ignored"},
+            "vertex3": {"param": "ignored"},  # Not in graph
+        }
+
+        component._process_tweaks_on_graph(graph, tweaks)
+
+        vertex1.update_raw_params.assert_called_once()
+        call_args = vertex1.update_raw_params.call_args[0][0]
+        assert call_args == {"param": "value"}
+        assert "code" not in call_args
+        vertex2.update_raw_params.assert_not_called()
